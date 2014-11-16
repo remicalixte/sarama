@@ -13,9 +13,11 @@ before_install:
 - vagrant/boot_cluster.sh
 - vagrant/create_topics.sh
 - go install -a -race regexp # Fix for go 1.2
+- go get code.google.com/p/go.tools/cmd/vet
 
 script:
 - go test -v -race ./...
+- go vet ./...
 
 notifications:
   flowdock: 15e08f7ed3a8fd2d89ddb36435301c1a
