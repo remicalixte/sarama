@@ -51,6 +51,7 @@ func (ps *produceSet) add(msg *ProducerMessage) error {
 	timestamp := msg.Timestamp
 	if timestamp.IsZero() {
 		timestamp = time.Now()
+		msg.Timestamp = timestamp
 	}
 	timestamp = timestamp.Truncate(time.Millisecond)
 
