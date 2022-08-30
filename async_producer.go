@@ -907,11 +907,6 @@ func (bp *brokerProducer) handleSuccess(sent *produceSet, response *ProduceRespo
 		switch block.Err {
 		// Success
 		case ErrNoError:
-			if bp.parent.conf.Version.IsAtLeast(V0_10_0_0) && !block.Timestamp.IsZero() {
-				for _, msg := range pSet.msgs {
-					msg.Timestamp = block.Timestamp
-				}
-			}
 			for i, msg := range pSet.msgs {
 				msg.Offset = block.Offset + int64(i)
 			}
