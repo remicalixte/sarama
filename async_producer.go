@@ -691,30 +691,20 @@ func (p *asyncProducer) newBrokerProducer(broker *Broker) *brokerProducer {
 	go withRecover(bp.run)
 
 	// minimal bridge to make the network response `select`able
-	go func() {
-		workers := 10
-		var wg sync.WaitGroup
-		wg.Add(workers)
-		for i := 0; i < workers; i++ {
-			go withRecover(func() {
-				for set := range bridge {
-					request := set.buildRequest()
+	go withRecover(func() {
+		for set := range bridge {
+			request := set.buildRequest()
 
-					response, err := broker.Produce(request)
+			response, err := broker.Produce(request)
 
-					responses <- &brokerProducerResponse{
-						set: set,
-						err: err,
-						res: response,
-					}
-				}
-
-				wg.Done()
-			})
+			responses <- &brokerProducerResponse{
+				set: set,
+				err: err,
+				res: response,
+			}
 		}
-		wg.Wait()
 		close(responses)
-	}()
+	})
 
 	if p.conf.Producer.Retry.Max <= 0 {
 		bp.abandoned = make(chan struct{})
