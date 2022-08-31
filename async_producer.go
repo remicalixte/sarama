@@ -692,7 +692,7 @@ func (p *asyncProducer) newBrokerProducer(broker *Broker) *brokerProducer {
 
 	// minimal bridge to make the network response `select`able
 	go func() {
-		workers := 2
+		workers := 10
 		var wg sync.WaitGroup
 		wg.Add(workers)
 		for i := 0; i < workers; i++ {
