@@ -149,7 +149,7 @@ func (p *responsePromise) handle(packets []byte, err error) {
 // NewBroker creates and returns a Broker targeting the given host:port address.
 // This does not attempt to actually connect, you have to call Open() for that.
 func NewBroker(addr string) *Broker {
-	return &Broker{id: -1, addr: addr}
+	return &Broker{id: -1, addr: addr, stsd: &statsd.NoOpClient{}}
 }
 
 // Open tries to connect to the Broker if it is not already connected or connecting, but does not block
