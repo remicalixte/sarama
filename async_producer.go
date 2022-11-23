@@ -5,12 +5,94 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sync"
 	"time"
 
+	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/eapache/go-resiliency/breaker"
 	"github.com/eapache/queue"
 )
+
+// ChanGauge is a stat that tracks how full a channel is.
+type ChanGauge struct {
+	pctFullMetric string
+	lenMetric     string
+	capMetric     string
+
+	name   string
+	tags   []string
+	c      interface{}
+	client statsd.ClientInterface
+	ticker time.Ticker
+}
+
+// NewTaggedChanGauge creates a channel gauge.
+func NewTaggedChanGauge(name string, tags []string, c interface{}, client statsd.ClientInterface) (*ChanGauge, error) {
+	_, _, err := lenCap(c)
+	if err != nil {
+		return nil, err
+	}
+
+	g := &ChanGauge{
+		pctFullMetric: name + ".percent_full",
+		lenMetric:     name + ".length",
+		capMetric:     name + ".capacity",
+
+		name:   name,
+		tags:   tags,
+		c:      c,
+		client: client,
+		ticker: *time.NewTicker(10 * time.Second),
+	}
+
+	go func() {
+		for range g.ticker.C {
+			g.Flush()
+		}
+	}()
+
+	return g, nil
+}
+
+// MustNewTaggedChanGauge creates a channel gauge on c and panics if it's not a channel.
+func MustNewTaggedChanGauge(name string, tags []string, c interface{}, client statsd.ClientInterface) *ChanGauge {
+	g, err := NewTaggedChanGauge(name, tags, c, client)
+	if err != nil {
+		panic(err)
+	}
+	return g
+}
+
+// Flush submits the channel's stats.
+func (cg *ChanGauge) Flush() (length, capacity int, gauge float64, err error) {
+	length, capacity, err = lenCap(cg.c)
+	if err != nil {
+		return
+	}
+
+	gauge = float64(0.0)
+	if capacity > 0 {
+		gauge = float64(length) / float64(capacity) * 100
+	}
+
+	cg.client.Gauge(cg.pctFullMetric, gauge, cg.tags, 1)
+	cg.client.Gauge(cg.lenMetric, float64(length), cg.tags, 1)
+	cg.client.Gauge(cg.capMetric, float64(capacity), cg.tags, 1)
+	return
+}
+
+func (cg *ChanGauge) Stop() {
+	cg.ticker.Stop()
+}
+
+func lenCap(ch interface{}) (c, l int, err error) {
+	v := reflect.ValueOf(ch)
+	if v.Kind() != reflect.Chan {
+		return 0, 0, errors.New("not a channel")
+	}
+	return v.Len(), v.Cap(), nil
+}
 
 // AsyncProducer publishes Kafka messages using a non-blocking API. It routes messages
 // to the correct broker for the provided topic-partition, refreshing metadata as appropriate,
@@ -48,6 +130,8 @@ type AsyncProducer interface {
 	// you can set Producer.Return.Errors in your config to false, which prevents
 	// errors to be returned.
 	Errors() <-chan *ProducerError
+
+	SetStatsdClient(stsd statsd.ClientInterface)
 }
 
 // transactionManager keeps the state necessary to ensure idempotent production
@@ -122,6 +206,7 @@ type asyncProducer struct {
 	brokerLock sync.Mutex
 
 	txnmgr *transactionManager
+	stsd   statsd.ClientInterface
 }
 
 // NewAsyncProducer creates a new AsyncProducer using the given broker addresses and configuration.
@@ -163,6 +248,7 @@ func newAsyncProducer(client Client) (AsyncProducer, error) {
 		brokers:    make(map[*Broker]*brokerProducer),
 		brokerRefs: make(map[*brokerProducer]int),
 		txnmgr:     txnmgr,
+		stsd:       &statsd.NoOpClient{},
 	}
 
 	// launch our singleton dispatchers
@@ -283,6 +369,10 @@ func (pe ProducerErrors) Error() string {
 	return fmt.Sprintf("kafka: Failed to deliver %d messages.", len(pe))
 }
 
+func (p *asyncProducer) SetStatsdClient(stsd statsd.ClientInterface) {
+	p.stsd = stsd
+}
+
 func (p *asyncProducer) Errors() <-chan *ProducerError {
 	return p.errors
 }
@@ -392,6 +482,8 @@ type topicProducer struct {
 	topic  string
 	input  <-chan *ProducerMessage
 
+	inputGauge *ChanGauge
+
 	breaker     *breaker.Breaker
 	handlers    map[int32]chan<- *ProducerMessage
 	partitioner Partitioner
@@ -407,6 +499,7 @@ func (p *asyncProducer) newTopicProducer(topic string) chan<- *ProducerMessage {
 		handlers:    make(map[int32]chan<- *ProducerMessage),
 		partitioner: p.conf.Producer.Partitioner(topic),
 	}
+	tp.inputGauge = MustNewTaggedChanGauge("sarama.topic_producer.input", []string{"topic:" + topic}, tp.input, p.stsd)
 	go withRecover(tp.dispatch)
 	return input
 }
@@ -484,6 +577,8 @@ type partitionProducer struct {
 	partition int32
 	input     <-chan *ProducerMessage
 
+	inputGauge *ChanGauge
+
 	leader         *Broker
 	breaker        *breaker.Breaker
 	brokerProducer *brokerProducer
@@ -512,6 +607,8 @@ func (p *asyncProducer) newPartitionProducer(topic string, partition int32) chan
 		breaker:    breaker.New(3, 1, 10*time.Second),
 		retryState: make([]partitionRetryState, p.conf.Producer.Retry.Max+1),
 	}
+	pp.inputGauge = MustNewTaggedChanGauge("sarama.partition_producer.input", []string{"topic:" + topic, fmt.Sprintf("partition:%d", partition)}, pp.input, p.stsd)
+
 	go withRecover(pp.dispatch)
 	return input
 }
@@ -1209,6 +1306,7 @@ func (p *asyncProducer) getBrokerProducer(broker *Broker) *brokerProducer {
 
 	if bp == nil {
 		bp = p.newBrokerProducer(broker)
+		broker.stsd = p.stsd
 		p.brokers[broker] = bp
 		p.brokerRefs[bp] = 0
 	}

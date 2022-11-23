@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/rcrowley/go-metrics"
 )
 
@@ -52,6 +53,7 @@ type Broker struct {
 	brokerResponseSize     metrics.Histogram
 	brokerRequestsInFlight metrics.Counter
 	brokerThrottleTime     metrics.Histogram
+	stsd                   statsd.ClientInterface
 
 	kerberosAuthenticator               GSSAPIKerberosAuth
 	clientSessionReauthenticationTimeMs int64
@@ -122,6 +124,7 @@ type SCRAMClient interface {
 
 type responsePromise struct {
 	requestTime   time.Time
+	endWriteTime  time.Time
 	correlationID int32
 	headerVersion int16
 	handler       func([]byte, error)
@@ -428,7 +431,7 @@ func (b *Broker) AsyncProduce(request *ProduceRequest, cb ProduceCallback) error
 	return b.sendWithPromise(request, promise)
 }
 
-//Produce returns a produce response or error
+// Produce returns a produce response or error
 func (b *Broker) Produce(request *ProduceRequest) (*ProduceResponse, error) {
 	var (
 		response *ProduceResponse
@@ -946,6 +949,8 @@ func (b *Broker) sendWithPromise(rb protocolBody, promise *responsePromise) erro
 	// Will be decremented in responseReceiver (except error or request with NoResponse)
 	b.addRequestInFlightMetrics(1)
 	bytes, err := b.write(buf)
+	endWriteTime := time.Now()
+	b.stsd.Distribution("sarama.broker.write_latency", float64(endWriteTime.Sub(requestTime)), []string{fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
 	b.updateOutgoingCommunicationMetrics(bytes)
 	if err != nil {
 		b.addRequestInFlightMetrics(-1)
@@ -960,6 +965,7 @@ func (b *Broker) sendWithPromise(rb protocolBody, promise *responsePromise) erro
 	}
 
 	promise.requestTime = requestTime
+	promise.endWriteTime = endWriteTime
 	promise.correlationID = req.correlationID
 	b.responses <- promise
 
@@ -1065,8 +1071,15 @@ func (b *Broker) responseReceiver() {
 		headerLength := getHeaderLength(response.headerVersion)
 		header := make([]byte, headerLength)
 
+		startReadTime := time.Now()
 		bytesReadHeader, err := b.readFull(header)
-		requestLatency := time.Since(response.requestTime)
+		endReadTime := time.Now()
+		requestLatency := endReadTime.Sub(response.requestTime)
+		readLatency := endReadTime.Sub(startReadTime)
+		inbetweenLatency := startReadTime.Sub(response.endWriteTime)
+		b.stsd.Distribution("sarama.broker.inbetween_latency", float64(inbetweenLatency), []string{fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
+		b.stsd.Distribution("sarama.broker.read_latency", float64(readLatency), []string{fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
+
 		if err != nil {
 			b.updateIncomingCommunicationMetrics(bytesReadHeader, requestLatency)
 			dead = err
@@ -1199,14 +1212,14 @@ func (b *Broker) sendAndReceiveSASLHandshake(saslType SASLMechanism, version int
 // In SASL Plain, Kafka expects the auth header to be in the following format
 // Message format (from https://tools.ietf.org/html/rfc4616):
 //
-//   message   = [authzid] UTF8NUL authcid UTF8NUL passwd
-//   authcid   = 1*SAFE ; MUST accept up to 255 octets
-//   authzid   = 1*SAFE ; MUST accept up to 255 octets
-//   passwd    = 1*SAFE ; MUST accept up to 255 octets
-//   UTF8NUL   = %x00 ; UTF-8 encoded NUL character
+//	message   = [authzid] UTF8NUL authcid UTF8NUL passwd
+//	authcid   = 1*SAFE ; MUST accept up to 255 octets
+//	authzid   = 1*SAFE ; MUST accept up to 255 octets
+//	passwd    = 1*SAFE ; MUST accept up to 255 octets
+//	UTF8NUL   = %x00 ; UTF-8 encoded NUL character
 //
-//   SAFE      = UTF1 / UTF2 / UTF3 / UTF4
-//                  ;; any UTF-8 encoded Unicode character except NUL
+//	SAFE      = UTF1 / UTF2 / UTF3 / UTF4
+//	               ;; any UTF-8 encoded Unicode character except NUL
 //
 // With SASL v0 handshake and auth then:
 // When credentials are valid, Kafka returns a 4 byte array of null characters.
