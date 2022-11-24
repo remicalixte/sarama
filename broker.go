@@ -950,7 +950,7 @@ func (b *Broker) sendWithPromise(rb protocolBody, promise *responsePromise) erro
 	b.addRequestInFlightMetrics(1)
 	bytes, err := b.write(buf)
 	endWriteTime := time.Now()
-	b.stsd.Distribution("sarama.broker.write_latency", float64(endWriteTime.Sub(requestTime)), []string{fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
+	b.stsd.Distribution("sarama.broker.write_latency", float64(endWriteTime.Sub(requestTime)), []string{"section:" + b.conf.Section, fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
 	b.updateOutgoingCommunicationMetrics(bytes)
 	if err != nil {
 		b.addRequestInFlightMetrics(-1)
@@ -1077,8 +1077,8 @@ func (b *Broker) responseReceiver() {
 		requestLatency := endReadTime.Sub(response.requestTime)
 		readLatency := endReadTime.Sub(startReadTime)
 		inbetweenLatency := startReadTime.Sub(response.endWriteTime)
-		b.stsd.Distribution("sarama.broker.inbetween_latency", float64(inbetweenLatency), []string{fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
-		b.stsd.Distribution("sarama.broker.read_latency", float64(readLatency), []string{fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
+		b.stsd.Distribution("sarama.broker.inbetween_latency", float64(inbetweenLatency), []string{"section:" + b.conf.Section, fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
+		b.stsd.Distribution("sarama.broker.read_latency", float64(readLatency), []string{"section:" + b.conf.Section, fmt.Sprintf("broker_id:%d", b.ID())}, 1.0)
 
 		if err != nil {
 			b.updateIncomingCommunicationMetrics(bytesReadHeader, requestLatency)

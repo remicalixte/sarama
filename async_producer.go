@@ -499,7 +499,7 @@ func (p *asyncProducer) newTopicProducer(topic string) chan<- *ProducerMessage {
 		handlers:    make(map[int32]chan<- *ProducerMessage),
 		partitioner: p.conf.Producer.Partitioner(topic),
 	}
-	tp.inputGauge = MustNewTaggedChanGauge("sarama.topic_producer.input", []string{"topic:" + topic}, tp.input, p.stsd)
+	tp.inputGauge = MustNewTaggedChanGauge("sarama.topic_producer.input", []string{"topic:" + topic, "section:" + p.conf.Section}, tp.input, p.stsd)
 	go withRecover(tp.dispatch)
 	return input
 }
@@ -607,7 +607,7 @@ func (p *asyncProducer) newPartitionProducer(topic string, partition int32) chan
 		breaker:    breaker.New(3, 1, 10*time.Second),
 		retryState: make([]partitionRetryState, p.conf.Producer.Retry.Max+1),
 	}
-	pp.inputGauge = MustNewTaggedChanGauge("sarama.partition_producer.input", []string{"topic:" + topic, fmt.Sprintf("partition:%d", partition)}, pp.input, p.stsd)
+	pp.inputGauge = MustNewTaggedChanGauge("sarama.partition_producer.input", []string{"section:" + p.conf.Section, "topic:" + topic, fmt.Sprintf("partition:%d", partition)}, pp.input, p.stsd)
 
 	go withRecover(pp.dispatch)
 	return input
