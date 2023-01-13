@@ -8,6 +8,7 @@ import (
 
 	"github.com/eapache/go-resiliency/breaker"
 	"github.com/eapache/queue"
+	"github.com/rcrowley/go-metrics"
 )
 
 // AsyncProducer publishes Kafka messages using a non-blocking API. It routes messages
@@ -393,6 +394,8 @@ type topicProducer struct {
 	breaker     *breaker.Breaker
 	handlers    map[int32]chan<- *ProducerMessage
 	partitioner Partitioner
+
+	inputChanHistogram metrics.Histogram
 }
 
 func (p *asyncProducer) newTopicProducer(topic string) chan<- *ProducerMessage {
@@ -404,6 +407,8 @@ func (p *asyncProducer) newTopicProducer(topic string) chan<- *ProducerMessage {
 		breaker:     breaker.New(3, 1, 10*time.Second),
 		handlers:    make(map[int32]chan<- *ProducerMessage),
 		partitioner: p.conf.Producer.Partitioner(topic),
+
+		inputChanHistogram: getOrRegisterTopicHistogram("topic-producer-input-chan", topic, p.conf.MetricRegistry),
 	}
 	go withRecover(tp.dispatch)
 	return input
@@ -411,6 +416,7 @@ func (p *asyncProducer) newTopicProducer(topic string) chan<- *ProducerMessage {
 
 func (tp *topicProducer) dispatch() {
 	for msg := range tp.input {
+		tp.inputChanHistogram.Update(int64((len(tp.input) * 100) / cap(tp.input)))
 		if msg.retries == 0 {
 			if err := tp.partitionMessage(msg); err != nil {
 				tp.parent.returnError(msg, err)
@@ -492,6 +498,8 @@ type partitionProducer struct {
 	// therefore whether our buffer is complete and safe to flush)
 	highWatermark int
 	retryState    []partitionRetryState
+
+	inputChanHistogram metrics.Histogram
 }
 
 type partitionRetryState struct {
@@ -509,6 +517,8 @@ func (p *asyncProducer) newPartitionProducer(topic string, partition int32) chan
 
 		breaker:    breaker.New(3, 1, 10*time.Second),
 		retryState: make([]partitionRetryState, p.conf.Producer.Retry.Max+1),
+
+		inputChanHistogram: getOrRegisterTopicHistogram("partition-producer-input-chan", topic, p.conf.MetricRegistry),
 	}
 	go withRecover(pp.dispatch)
 	return input
@@ -544,6 +554,7 @@ func (pp *partitionProducer) dispatch() {
 	}()
 
 	for msg := range pp.input {
+		pp.inputChanHistogram.Update(int64((len(pp.input) * 100) / cap(pp.input)))
 		if pp.brokerProducer != nil && pp.brokerProducer.abandoned != nil {
 			select {
 			case <-pp.brokerProducer.abandoned:
