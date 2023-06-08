@@ -198,6 +198,7 @@ func (b *Broker) Open(conf *Config) error {
 		b.responseRate = metrics.GetOrRegisterMeter("response-rate", conf.MetricRegistry)
 		b.responseSize = getOrRegisterHistogram("response-size", conf.MetricRegistry)
 		b.requestsInFlight = metrics.GetOrRegisterCounter("requests-in-flight", conf.MetricRegistry)
+		b.connLockWaitTime = getOrRegisterHistogram("conn-lock-wait-time-in-ms", conf.MetricRegistry)
 		// Do not gather metrics for seeded broker (only used during bootstrap) because they share
 		// the same id (-1) and are already exposed through the global metrics above
 		if b.id >= 0 && !metrics.UseNilMetrics {
@@ -1570,6 +1571,7 @@ func (b *Broker) registerMetrics() {
 	b.brokerResponseSize = b.registerHistogram("response-size")
 	b.brokerRequestsInFlight = b.registerCounter("requests-in-flight")
 	b.brokerThrottleTime = b.registerHistogram("throttle-time-in-ms")
+	b.brokerConnLockWaitTime = b.registerHistogram("conn-lock-wait-time-in-ms")
 }
 
 func (b *Broker) unregisterMetrics() {
