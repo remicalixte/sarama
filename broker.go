@@ -809,8 +809,12 @@ func (b *Broker) write(buf []byte) (n int, err error) {
 }
 
 func (b *Broker) send(rb protocolBody, promiseResponse bool, responseHeaderVersion int16) (*responsePromise, error) {
+	connWaitStart := time.Now()
+
 	b.lock.Lock()
 	defer b.lock.Unlock()
+
+	b.updateConnLockWaitTimeMetric(time.Since(connWaitStart))
 
 	if b.conn == nil {
 		if b.connErr != nil {
