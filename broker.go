@@ -51,9 +51,15 @@ type Broker struct {
 	brokerRequestsInFlight metrics.Counter
 	brokerThrottleTime     metrics.Histogram
 
-	kerberosAuthenticator  GSSAPIKerberosAuth
-	connLockWaitTime       metrics.Histogram
-	brokerConnLockWaitTime metrics.Histogram
+	kerberosAuthenticator          GSSAPIKerberosAuth
+	connLockWaitTime               metrics.Histogram
+	brokerConnLockWaitTime         metrics.Histogram
+	connWriteTime                  metrics.Histogram
+	brokerConnWriteTime            metrics.Histogram
+	responsePromiseWriteTime       metrics.Histogram
+	brokerResponsePromiseWriteTime metrics.Histogram
+	connReadTime                   metrics.Histogram
+	brokerConnReadTime             metrics.Histogram
 }
 
 // SASLMechanism specifies the SASL mechanism the client uses to authenticate with the broker
@@ -199,6 +205,9 @@ func (b *Broker) Open(conf *Config) error {
 		b.responseSize = getOrRegisterHistogram("response-size", conf.MetricRegistry)
 		b.requestsInFlight = metrics.GetOrRegisterCounter("requests-in-flight", conf.MetricRegistry)
 		b.connLockWaitTime = getOrRegisterHistogram("conn-lock-wait-time-in-ms", conf.MetricRegistry)
+		b.connWriteTime = getOrRegisterHistogram("conn-write-time-in-ms", conf.MetricRegistry)
+		b.responsePromiseWriteTime = getOrRegisterHistogram("response-promise-write-time-in-ms", conf.MetricRegistry)
+		b.connReadTime = getOrRegisterHistogram("conn-read-time-in-ms", conf.MetricRegistry)
 		// Do not gather metrics for seeded broker (only used during bootstrap) because they share
 		// the same id (-1) and are already exposed through the global metrics above
 		if b.id >= 0 && !metrics.UseNilMetrics {
@@ -815,8 +824,6 @@ func (b *Broker) send(rb protocolBody, promiseResponse bool, responseHeaderVersi
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	b.updateConnLockWaitTimeMetric(time.Since(connWaitStart))
-
 	if b.conn == nil {
 		if b.connErr != nil {
 			return nil, b.connErr
@@ -827,6 +834,8 @@ func (b *Broker) send(rb protocolBody, promiseResponse bool, responseHeaderVersi
 	if !b.conf.Version.IsAtLeast(rb.requiredVersion()) {
 		return nil, ErrUnsupportedVersion
 	}
+
+	b.updateConnLockWaitTimeMetric(time.Since(connWaitStart))
 
 	req := &request{correlationID: b.correlationID, clientID: b.conf.ClientID, body: rb}
 	buf, err := encode(req, b.conf.MetricRegistry)
@@ -839,6 +848,7 @@ func (b *Broker) send(rb protocolBody, promiseResponse bool, responseHeaderVersi
 	b.addRequestInFlightMetrics(1)
 	bytes, err := b.write(buf)
 	b.updateOutgoingCommunicationMetrics(bytes)
+	b.updateConnWriteTimeMetric(time.Since(requestTime))
 	if err != nil {
 		b.addRequestInFlightMetrics(-1)
 		return nil, err
@@ -851,8 +861,12 @@ func (b *Broker) send(rb protocolBody, promiseResponse bool, responseHeaderVersi
 		return nil, nil
 	}
 
+	responsePromiseWriteStart := time.Now()
+
 	promise := responsePromise{requestTime, req.correlationID, responseHeaderVersion, make(chan []byte), make(chan error)}
 	b.responses <- promise
+
+	b.updateResponsePromiseWriteTimeMetric(time.Since(responsePromiseWriteStart))
 
 	return &promise, nil
 }
@@ -956,8 +970,12 @@ func (b *Broker) responseReceiver() {
 		headerLength := getHeaderLength(response.headerVersion)
 		header := make([]byte, headerLength)
 
+		readStartTime := time.Now()
 		bytesReadHeader, err := b.readFull(header)
+		b.updateConnReadTimeMetric(time.Since(readStartTime))
+
 		requestLatency := time.Since(response.requestTime)
+
 		if err != nil {
 			b.updateIncomingCommunicationMetrics(bytesReadHeader, requestLatency)
 			dead = err
@@ -1536,6 +1554,33 @@ func (b *Broker) updateConnLockWaitTimeMetric(waitTime time.Duration) {
 	}
 }
 
+func (b *Broker) updateConnWriteTimeMetric(writeTime time.Duration) {
+	writeTimeInMs := int64(writeTime / time.Millisecond)
+	b.connWriteTime.Update(writeTimeInMs)
+
+	if b.brokerConnWriteTime != nil {
+		b.brokerConnWriteTime.Update(writeTimeInMs)
+	}
+}
+
+func (b *Broker) updateResponsePromiseWriteTimeMetric(writeTime time.Duration) {
+	writeTimeInMs := int64(writeTime / time.Millisecond)
+	b.responsePromiseWriteTime.Update(writeTimeInMs)
+
+	if b.brokerResponsePromiseWriteTime != nil {
+		b.brokerResponsePromiseWriteTime.Update(writeTimeInMs)
+	}
+}
+
+func (b *Broker) updateConnReadTimeMetric(readTime time.Duration) {
+	readTimeInMs := int64(readTime / time.Millisecond)
+	b.connReadTime.Update(readTimeInMs)
+
+	if b.brokerConnReadTime != nil {
+		b.brokerConnReadTime.Update(readTimeInMs)
+	}
+}
+
 func (b *Broker) addRequestInFlightMetrics(i int64) {
 	b.requestsInFlight.Inc(i)
 	if b.brokerRequestsInFlight != nil {
@@ -1572,6 +1617,9 @@ func (b *Broker) registerMetrics() {
 	b.brokerRequestsInFlight = b.registerCounter("requests-in-flight")
 	b.brokerThrottleTime = b.registerHistogram("throttle-time-in-ms")
 	b.brokerConnLockWaitTime = b.registerHistogram("conn-lock-wait-time-in-ms")
+	b.brokerConnWriteTime = b.registerHistogram("conn-write-time-in-ms")
+	b.brokerResponsePromiseWriteTime = b.registerHistogram("response-promise-write-time-in-ms")
+	b.brokerConnReadTime = b.registerHistogram("conn-read-time-in-ms")
 }
 
 func (b *Broker) unregisterMetrics() {
