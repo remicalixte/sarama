@@ -165,7 +165,7 @@ func (c *consumerGroup) Consume(ctx context.Context, topics []string, handler Co
 
 	// Refresh metadata for requested topics
 	if err := c.client.RefreshMetadata(topics...); err != nil {
-		return err
+		return fmt.Errorf("failed to resfresh topic metadata: %w", err)
 	}
 
 	// Init session
@@ -173,7 +173,7 @@ func (c *consumerGroup) Consume(ctx context.Context, topics []string, handler Co
 	if err == ErrClosedClient {
 		return ErrClosedConsumerGroup
 	} else if err != nil {
-		return err
+		return fmt.Errorf("failed to init new session: %w", err)
 	}
 
 	// loop check topic partition numbers changed
