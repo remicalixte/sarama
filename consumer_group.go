@@ -209,7 +209,7 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 	coordinator, err := c.client.Coordinator(c.groupID)
 	if err != nil {
 		if retries <= 0 {
-			return nil, err
+			return nil, fmt.Errorf("failed to get coordinator: %w", err)
 		}
 
 		return c.retryNewSession(ctx, topics, handler, retries, true)
@@ -240,7 +240,7 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 		if consumerGroupJoinFailed != nil {
 			consumerGroupJoinFailed.Inc(1)
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to join consumer group: %w", err)
 	}
 	if join.Err != ErrNoError {
 		if consumerGroupJoinFailed != nil {
@@ -285,7 +285,7 @@ func (c *consumerGroup) newSession(ctx context.Context, topics []string, handler
 	if join.LeaderId == join.MemberId {
 		members, err := join.GetMembers()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get group members: %w", err)
 		}
 
 		plan, err = c.balance(strategy, members)
