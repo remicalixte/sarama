@@ -89,7 +89,7 @@ func TestConsumerGroupMemberMetadataV1Decode(t *testing.T) {
 
 func TestConsumerGroupMemberMetadataV3Decode(t *testing.T) {
 	meta := new(ConsumerGroupMemberMetadata)
-	if err := decode(groupMemberMetadataV3NilOwned, meta, nil); err != nil {
+	if err := decode(groupMemberMetadataV3NilOwned, meta); err != nil {
 		t.Error("Failed to decode V3 data", err)
 	}
 }
